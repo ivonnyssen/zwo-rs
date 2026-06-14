@@ -68,6 +68,9 @@ fn emit_link_directives() {
             // libASICamera2 is C++; pull in libc++ and libusb.
             println!("cargo:rustc-link-lib=dylib=c++");
             println!("cargo:rustc-link-lib=dylib=usb-1.0");
+            // libEFWFilter (USB-HID) uses IOKit/CoreFoundation on macOS.
+            println!("cargo:rustc-link-lib=framework=IOKit");
+            println!("cargo:rustc-link-lib=framework=CoreFoundation");
         }
         "windows" => {
             // ZWO ships per-arch import libs; assume the SDK lib dir is on the
@@ -83,6 +86,8 @@ fn emit_link_directives() {
             // libASICamera2 is C++; pull in libstdc++ and libusb.
             println!("cargo:rustc-link-lib=dylib=stdc++");
             println!("cargo:rustc-link-lib=dylib=usb-1.0");
+            // libEFWFilter (USB-HID) depends on libudev on Linux.
+            println!("cargo:rustc-link-lib=dylib=udev");
         }
     }
 
