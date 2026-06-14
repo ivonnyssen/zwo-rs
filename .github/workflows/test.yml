@@ -1,0 +1,40 @@
+# The test suite. Unlike check.yml, these jobs LINK the ZWO SDK, so they install
+# libclang (bindgen), libusb-1.0, and the ZWO ASI/EFW SDK (from the INDI mirror)
+# first. Linux only for now; macOS/Windows runners can be added later.
+permissions:
+  contents: read
+on:
+  push:
+    branches: [main]
+  pull_request:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+name: test
+jobs:
+  required:
+    runs-on: ubuntu-latest
+    name: ubuntu / ${{ matrix.toolchain }}
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [stable, beta]
+    env:
+      LD_LIBRARY_PATH: /usr/local/lib
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build deps (libclang, libusb)
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev libusb-1.0-0-dev
+      - name: Install ZWO ASI/EFW SDK
+        run: ./ci/install-zwo-sdk.sh
+      - name: Install ${{ matrix.toolchain }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+      - name: cargo generate-lockfile
+        if: hashFiles('Cargo.lock') == ''
+        run: cargo generate-lockfile
+      - name: cargo test --locked
+        run: cargo test --locked --all-features --all-targets
+      - name: cargo test --doc
+        run: cargo test --locked --all-features --doc

@@ -1,0 +1,39 @@
+[package]
+name = "zwo-rs"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94.1"
+authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/ivonnyssen/zwo-rs"
+documentation = "https://docs.rs/zwo-rs"
+homepage = "https://github.com/ivonnyssen/zwo-rs"
+description = "Safe Rust bindings for the ZWO ASI camera and EFW filter wheel SDK"
+keywords = ["zwo", "asi", "astronomy", "camera", "filter-wheel"]
+categories = ["api-bindings", "hardware-support"]
+
+[workspace]
+members = ["libzwo-sys"]
+resolver = "2"
+
+[features]
+default = []
+# Mirrors qhyccd-rs: a hardware-free, in-Rust simulated environment for
+# development and tests. NOTE: like qhyccd-rs, this removes the *camera*, not the
+# SDK *link* — the native SDK is still linked when this feature is enabled.
+simulation = ["rand", "rayon"]
+
+[dependencies]
+libzwo-sys = { version = "0.1.0", path = "libzwo-sys" }
+thiserror = "2.0"
+tracing = "0.1"
+rand = { version = "0.9", optional = true }
+rayon = { version = "1.10", optional = true }
+
+[dev-dependencies]
+mockall = "0.14"
+cargo-husky = { version = "1", default-features = false, features = [
+  "precommit-hook",
+  "user-hooks",
+] }

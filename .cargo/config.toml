@@ -1,0 +1,4 @@
+# Serialize tests: the FFI/simulation surface touches process-global SDK state,
+# so tests must not run concurrently (mirrors qhyccd-rs).
+[env]
+RUST_TEST_THREADS = "1"

@@ -1,0 +1,68 @@
+# Lightweight checks that do NOT link the ZWO SDK (only bindgen/libclang needed):
+# - fmt:    rustfmt
+# - clippy: lints (stable + beta) — compiles via `check`, no link
+# - doc:    rustdoc builds cleanly
+# - hack:   feature-powerset compiles (feature additivity)
+# See test.yml for the link/runtime jobs that need the SDK.
+permissions:
+  contents: read
+on:
+  push:
+    branches: [main]
+  pull_request:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+name: check
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    name: stable / fmt
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+  clippy:
+    runs-on: ubuntu-latest
+    name: ${{ matrix.toolchain }} / clippy
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [stable, beta]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libclang (for bindgen)
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev
+      - name: Install ${{ matrix.toolchain }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: clippy
+      - run: cargo clippy --all --all-targets --all-features -- -D warnings
+  doc:
+    runs-on: ubuntu-latest
+    name: stable / doc
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libclang (for bindgen)
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@stable
+      - run: cargo doc --no-deps --all-features
+  hack:
+    runs-on: ubuntu-latest
+    name: stable / features
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libclang (for bindgen)
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@cargo-hack
+      - run: cargo hack --feature-powerset check

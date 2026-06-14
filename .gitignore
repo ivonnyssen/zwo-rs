@@ -1,0 +1,15 @@
+/target
+**/target
+# Library crate: the lockfile is not committed; CI generates it.
+Cargo.lock
+lcov.info
+*.profraw
+.vscode
+.env
+
+# Claude Code runtime artifacts.
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/worktrees/
+
+# bindgen output is generated into OUT_DIR (under target/), never committed.
