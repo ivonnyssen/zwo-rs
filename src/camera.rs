@@ -11,6 +11,8 @@
 //! called.
 
 #[cfg(not(feature = "simulation"))]
+use crate::ffi_util::{c_string_field, hex8};
+#[cfg(not(feature = "simulation"))]
 use crate::{asi_check, sys};
 #[cfg(not(feature = "simulation"))]
 use std::os::raw::{c_int, c_long, c_uint};
@@ -758,24 +760,6 @@ fn control_caps_from_raw(raw: &sys::ASI_CONTROL_CAPS) -> ControlCaps {
         is_writable: raw.IsWritable != 0,
         is_auto_supported: raw.IsAutoSupported != 0,
     }
-}
-
-/// Read a fixed-size, NUL-terminated C `char` buffer into an owned [`String`]
-/// (lossy on invalid UTF-8). Portable across `c_char` signedness.
-#[cfg(not(feature = "simulation"))]
-fn c_string_field(buf: &[std::os::raw::c_char]) -> String {
-    let bytes: Vec<u8> = buf
-        .iter()
-        .take_while(|&&c| c != 0)
-        .map(|&c| (c as i32 & 0xff) as u8)
-        .collect();
-    String::from_utf8_lossy(&bytes).into_owned()
-}
-
-/// Format an 8-byte hardware id as a 16-character lowercase hex string.
-#[cfg(not(feature = "simulation"))]
-fn hex8(bytes: &[u8; 8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 // ---- simulation backend ------------------------------------------------------

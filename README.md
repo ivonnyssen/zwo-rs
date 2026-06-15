@@ -6,12 +6,13 @@ Safe Rust bindings for the **ZWO ASI camera** and **EFW filter wheel** SDK (with
 `zwo-camera` ASCOM Alpaca driver.
 
 > **Status: under construction.** Enumeration, SDK-version queries, typed
-> ASI/EFW error mapping, and the ASI **camera handle** are wired to the FFI:
-> open/init, `CameraInfo`, serial, control caps, ROI/binning, control get/set
-> (gain, offset, cooler, target temperature), single exposures (start/stop,
-> status, frame download), and ST4 pulse guiding. The EFW filter-wheel handle is
-> next. Scope order: **Camera → EFW filter wheel → EAF focuser**. See the
-> rusty-photon `docs/plans/zwo-driver.md` plan for the full design.
+> ASI/EFW error mapping, the ASI **camera handle** (open/init, `CameraInfo`,
+> serial, control caps, ROI/binning, control get/set, single exposures with
+> frame download, ST4 pulse guiding), and the EFW **filter-wheel handle** (open,
+> slot count, position with the `-1`-while-moving sentinel, serial, firmware,
+> calibration, rotation direction) are wired to the FFI. The EAF focuser is next.
+> Scope order: **Camera → EFW filter wheel → EAF focuser**. See the rusty-photon
+> `docs/plans/zwo-driver.md` plan for the full design.
 
 ## Crates
 
