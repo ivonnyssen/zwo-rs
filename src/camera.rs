@@ -2,12 +2,19 @@
 //!
 //! [`Sdk::cameras`] lists every connected camera's [`CameraInfo`] without
 //! opening it. [`Sdk::open_camera`] opens and initialises a camera, returning a
-//! [`Camera`] RAII handle that closes the device on drop. With the `simulation`
-//! feature a single fabricated `ASI2600MM-Pro-Simulated` camera is presented and
-//! the SDK is never called.
+//! [`Camera`] RAII handle that closes the device on drop. The handle covers the
+//! imaging path: ROI/binning ([`Camera::set_roi_format`]), controls
+//! ([`Camera::control_value`] / [`Camera::set_control_value`]), single exposures
+//! ([`Camera::start_exposure`] / [`Camera::download_exposure`]), and ST4 guiding
+//! ([`Camera::pulse_guide_on`]). With the `simulation` feature a single
+//! fabricated `ASI2600MM-Pro-Simulated` camera is presented and the SDK is never
+//! called.
 
 #[cfg(not(feature = "simulation"))]
 use crate::{asi_check, sys};
+#[cfg(not(feature = "simulation"))]
+use std::os::raw::{c_int, c_long, c_uint};
+
 use crate::{AsiError, Error, Result, Sdk};
 
 /// Bayer colour-filter pattern (`ASI_BAYER_PATTERN`).
@@ -113,6 +120,21 @@ impl ControlType {
             other => Self::Other(other),
         }
     }
+
+    #[cfg(not(feature = "simulation"))]
+    fn to_raw(self) -> c_uint {
+        match self {
+            Self::Gain => 0,
+            Self::Exposure => 1,
+            Self::Offset => 5,
+            Self::Temperature => 8,
+            Self::HighSpeedMode => 14,
+            Self::CoolerPowerPerc => 15,
+            Self::TargetTemp => 16,
+            Self::CoolerOn => 17,
+            Self::Other(v) => v as c_uint,
+        }
+    }
 }
 
 /// Safe view of `ASI_CONTROL_CAPS` — one tunable control's range.
@@ -134,10 +156,154 @@ pub struct ControlCaps {
     pub is_auto_supported: bool,
 }
 
+/// Output image format (`ASI_IMG_TYPE`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageType {
+    /// `ASI_IMG_RAW8` — 8-bit raw (1 byte/pixel).
+    Raw8,
+    /// `ASI_IMG_RGB24` — 8-bit BGR (3 bytes/pixel).
+    Rgb24,
+    /// `ASI_IMG_RAW16` — 16-bit raw (2 bytes/pixel).
+    Raw16,
+    /// `ASI_IMG_Y8` — 8-bit luminance (1 byte/pixel).
+    Y8,
+}
+
+impl ImageType {
+    /// Bytes per pixel for this format.
+    #[must_use]
+    pub fn bytes_per_pixel(self) -> usize {
+        match self {
+            Self::Raw8 | Self::Y8 => 1,
+            Self::Raw16 => 2,
+            Self::Rgb24 => 3,
+        }
+    }
+
+    #[cfg(not(feature = "simulation"))]
+    fn to_raw(self) -> c_int {
+        match self {
+            Self::Raw8 => 0,
+            Self::Rgb24 => 1,
+            Self::Raw16 => 2,
+            Self::Y8 => 3,
+        }
+    }
+
+    #[cfg(not(feature = "simulation"))]
+    fn from_raw(v: c_int) -> Option<Self> {
+        match v {
+            0 => Some(Self::Raw8),
+            1 => Some(Self::Rgb24),
+            2 => Some(Self::Raw16),
+            3 => Some(Self::Y8),
+            _ => None,
+        }
+    }
+}
+
+/// The region-of-interest format: frame size, binning, and pixel format.
+///
+/// `width`/`height` are **post-binning** pixel counts (as the SDK expects): a
+/// full-frame 6248×4176 sensor at bin 2 is `width = 3124`, `height = 2088`. The
+/// SDK requires `width % 8 == 0` and `height % 2 == 0`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoiFormat {
+    /// Post-binning frame width in pixels (`width % 8 == 0`).
+    pub width: u32,
+    /// Post-binning frame height in pixels (`height % 2 == 0`).
+    pub height: u32,
+    /// Symmetric binning factor (1 = no binning).
+    pub bin: u32,
+    /// Pixel/output format.
+    pub image_type: ImageType,
+}
+
+impl RoiFormat {
+    /// Byte length of one full frame in this format
+    /// (`width × height × bytes/pixel`).
+    #[must_use]
+    pub fn buffer_len(&self) -> usize {
+        self.width as usize * self.height as usize * self.image_type.bytes_per_pixel()
+    }
+}
+
+/// Exposure state machine (`ASI_EXPOSURE_STATUS`), reported by
+/// [`Camera::exposure_status`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExposureStatus {
+    /// `ASI_EXP_IDLE` — no exposure in progress; ready to start one.
+    Idle,
+    /// `ASI_EXP_WORKING` — exposing.
+    Working,
+    /// `ASI_EXP_SUCCESS` — finished; the frame is ready to download.
+    Success,
+    /// `ASI_EXP_FAILED` — the exposure failed; start it again.
+    Failed,
+}
+
+impl ExposureStatus {
+    #[cfg(not(feature = "simulation"))]
+    #[must_use]
+    fn from_raw(v: c_uint) -> Self {
+        match v {
+            0 => Self::Idle,
+            1 => Self::Working,
+            2 => Self::Success,
+            _ => Self::Failed,
+        }
+    }
+}
+
+/// ST4 guide-pulse direction (`ASI_GUIDE_DIRECTION`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuideDirection {
+    /// `ASI_GUIDE_NORTH` (+Dec).
+    North,
+    /// `ASI_GUIDE_SOUTH` (−Dec).
+    South,
+    /// `ASI_GUIDE_EAST` (+RA).
+    East,
+    /// `ASI_GUIDE_WEST` (−RA).
+    West,
+}
+
+impl GuideDirection {
+    #[cfg(not(feature = "simulation"))]
+    fn to_raw(self) -> c_uint {
+        match self {
+            Self::North => 0,
+            Self::South => 1,
+            Self::East => 2,
+            Self::West => 3,
+        }
+    }
+}
+
+/// A control's current value and whether it is in SDK auto mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ControlValue {
+    /// The raw control value (e.g. gain, offset; temperature is in 0.1 °C units).
+    pub value: i64,
+    /// Whether the control is currently in the SDK's auto mode.
+    pub is_auto: bool,
+}
+
 /// An open ASI camera. Closes the device on drop.
+///
+/// The ZWO SDK is not safe for concurrent calls on a single camera handle, so
+/// `Camera` is `Send` but **not** `Sync`: move it between threads freely, but to
+/// share it across threads put it behind a `Mutex` so the SDK calls serialise.
+/// Without this, a second thread could resize the ROI (`set_roi_format`) during
+/// an in-flight [`Camera::download_exposure`], making the SDK write past the
+/// caller's buffer.
 #[derive(Debug)]
 pub struct Camera {
     info: CameraInfo,
+    #[cfg(feature = "simulation")]
+    state: std::sync::Mutex<SimState>,
+    /// Makes `Camera` `!Sync` (see the type docs) while leaving it `Send`.
+    _not_sync: std::marker::PhantomData<std::cell::Cell<()>>,
 }
 
 impl Sdk {
@@ -178,8 +344,12 @@ impl Sdk {
             if index >= crate::SIM_CAMERA_COUNT {
                 return Err(Error::Asi(AsiError::InvalidIndex));
             }
+            let info = sim_camera_info();
+            let state = std::sync::Mutex::new(SimState::new(&info));
             Camera {
-                info: sim_camera_info(),
+                info,
+                state,
+                _not_sync: std::marker::PhantomData,
             }
         };
         #[cfg(not(feature = "simulation"))]
@@ -196,7 +366,10 @@ impl Sdk {
                 }
                 return Err(e);
             }
-            Camera { info }
+            Camera {
+                info,
+                _not_sync: std::marker::PhantomData,
+            }
         };
         Ok(camera)
     }
@@ -268,6 +441,262 @@ impl Camera {
                 .collect::<Result<Vec<_>>>()?
         };
         Ok(caps)
+    }
+
+    /// Set the ROI format: frame size (post-binning), binning, and pixel format.
+    ///
+    /// Capture must be stopped first. `width` must be a multiple of 8 and
+    /// `height` a multiple of 2 (SDK requirements).
+    ///
+    /// # Errors
+    /// Returns [`Error::Asi`] if the size, binning, or format is invalid for
+    /// this camera.
+    pub fn set_roi_format(
+        &self,
+        width: u32,
+        height: u32,
+        bin: u32,
+        image_type: ImageType,
+    ) -> Result<()> {
+        #[cfg(feature = "simulation")]
+        self.sim_set_roi_format(width, height, bin, image_type)?;
+        #[cfg(not(feature = "simulation"))]
+        {
+            let w = c_int::try_from(width).map_err(|_| Error::Asi(AsiError::InvalidSize))?;
+            let h = c_int::try_from(height).map_err(|_| Error::Asi(AsiError::InvalidSize))?;
+            let b = c_int::try_from(bin).map_err(|_| Error::Asi(AsiError::InvalidSize))?;
+            // SAFETY: open camera id; the SDK validates size/binning/format.
+            asi_check(
+                unsafe { sys::ASISetROIFormat(self.info.id, w, h, b, image_type.to_raw()) } as i32,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Read the current ROI format.
+    ///
+    /// # Errors
+    /// Returns [`Error::Asi`] if the SDK call fails or the camera reports an
+    /// unknown image type.
+    pub fn roi_format(&self) -> Result<RoiFormat> {
+        #[cfg(feature = "simulation")]
+        let roi = self.sim_roi_format()?;
+        #[cfg(not(feature = "simulation"))]
+        let roi = {
+            let mut w: c_int = 0;
+            let mut h: c_int = 0;
+            let mut b: c_int = 0;
+            let mut img: sys::ASI_IMG_TYPE = 0;
+            // SAFETY: open camera id; the SDK writes the four out-params.
+            asi_check(unsafe {
+                sys::ASIGetROIFormat(self.info.id, &mut w, &mut h, &mut b, &mut img)
+            } as i32)?;
+            let image_type =
+                ImageType::from_raw(img).ok_or(Error::Asi(AsiError::InvalidImgType))?;
+            RoiFormat {
+                width: u32::try_from(w).unwrap_or(0),
+                height: u32::try_from(h).unwrap_or(0),
+                bin: u32::try_from(b).unwrap_or(0),
+                image_type,
+            }
+        };
+        Ok(roi)
+    }
+
+    /// Set the ROI start position (top-left), in post-binning coordinates.
+    ///
+    /// # Errors
+    /// Returns [`Error::Asi`] if the position puts the frame out of bounds.
+    pub fn set_start_pos(&self, x: u32, y: u32) -> Result<()> {
+        #[cfg(feature = "simulation")]
+        self.sim_set_start_pos(x, y)?;
+        #[cfg(not(feature = "simulation"))]
+        {
+            let sx = c_int::try_from(x).map_err(|_| Error::Asi(AsiError::OutOfBoundary))?;
+            let sy = c_int::try_from(y).map_err(|_| Error::Asi(AsiError::OutOfBoundary))?;
+            // SAFETY: open camera id; the SDK validates the position.
+            asi_check(unsafe { sys::ASISetStartPos(self.info.id, sx, sy) } as i32)?;
+        }
+        Ok(())
+    }
+
+    /// Read the current ROI start position (top-left), in post-binning
+    /// coordinates.
+    ///
+    /// # Errors
+    /// Returns [`Error::Asi`] if the SDK call fails.
+    pub fn start_pos(&self) -> Result<(u32, u32)> {
+        #[cfg(feature = "simulation")]
+        let pos = self.sim_start_pos()?;
+        #[cfg(not(feature = "simulation"))]
+        let pos = {
+            let mut x: c_int = 0;
+            let mut y: c_int = 0;
+            // SAFETY: open camera id; the SDK writes both out-params.
+            asi_check(unsafe { sys::ASIGetStartPos(self.info.id, &mut x, &mut y) } as i32)?;
+            (u32::try_from(x).unwrap_or(0), u32::try_from(y).unwrap_or(0))
+        };
+        Ok(pos)
+    }
+
+    /// Read a control's current value and auto flag.
+    ///
+    /// Temperature is reported in 0.1 °C units (see
+    /// [`Camera::temperature_celsius`]).
+    ///
+    /// # Errors
+    /// Returns [`Error::Asi`] if the control type is invalid for this camera.
+    pub fn control_value(&self, control: ControlType) -> Result<ControlValue> {
+        #[cfg(feature = "simulation")]
+        let value = self.sim_control_value(control)?;
+        #[cfg(not(feature = "simulation"))]
+        let value = {
+            let mut v: c_long = 0;
+            let mut auto: sys::ASI_BOOL = 0;
+            // SAFETY: open camera id; the SDK writes the value and auto flag.
+            asi_check(unsafe {
+                sys::ASIGetControlValue(self.info.id, control.to_raw(), &mut v, &mut auto)
+            } as i32)?;
+            ControlValue {
+                value: v,
+                is_auto: auto != 0,
+            }
+        };
+        Ok(value)
+    }
+
+    /// Set a control's value (and auto mode).
+    ///
+    /// The SDK clamps out-of-range values to the control's min/max rather than
+    /// failing.
+    ///
+    /// # Errors
+    /// Returns [`Error::Asi`] if the control type is invalid or the value is
+    /// rejected by the camera.
+    pub fn set_control_value(&self, control: ControlType, value: i64, auto: bool) -> Result<()> {
+        #[cfg(feature = "simulation")]
+        self.sim_set_control_value(control, value, auto)?;
+        #[cfg(not(feature = "simulation"))]
+        {
+            let auto_flag: sys::ASI_BOOL = if auto { 1 } else { 0 };
+            // SAFETY: open camera id; the SDK validates control/value.
+            asi_check(unsafe {
+                sys::ASISetControlValue(self.info.id, control.to_raw(), value, auto_flag)
+            } as i32)?;
+        }
+        Ok(())
+    }
+
+    /// Sensor temperature in °C (decodes the 0.1 °C `ASI_TEMPERATURE` units).
+    ///
+    /// # Errors
+    /// Returns [`Error::Asi`] if the temperature control cannot be read.
+    pub fn temperature_celsius(&self) -> Result<f64> {
+        let raw = self.control_value(ControlType::Temperature)?;
+        Ok(raw.value as f64 / 10.0)
+    }
+
+    /// Start a single exposure. `is_dark` requests a dark frame on cameras with
+    /// a mechanical shutter (ignored otherwise).
+    ///
+    /// # Errors
+    /// Returns [`Error::Asi`] if the camera is in video mode or the call fails.
+    pub fn start_exposure(&self, is_dark: bool) -> Result<()> {
+        #[cfg(feature = "simulation")]
+        self.sim_start_exposure(is_dark)?;
+        #[cfg(not(feature = "simulation"))]
+        {
+            let dark: sys::ASI_BOOL = if is_dark { 1 } else { 0 };
+            // SAFETY: open camera id; starts a single exposure.
+            asi_check(unsafe { sys::ASIStartExposure(self.info.id, dark) } as i32)?;
+        }
+        Ok(())
+    }
+
+    /// Cancel an exposure in progress.
+    ///
+    /// # Errors
+    /// Returns [`Error::Asi`] if the call fails.
+    pub fn stop_exposure(&self) -> Result<()> {
+        #[cfg(feature = "simulation")]
+        self.sim_stop_exposure()?;
+        #[cfg(not(feature = "simulation"))]
+        // SAFETY: open camera id; cancels any exposure in progress.
+        asi_check(unsafe { sys::ASIStopExposure(self.info.id) } as i32)?;
+        Ok(())
+    }
+
+    /// Read the current [`ExposureStatus`].
+    ///
+    /// # Errors
+    /// Returns [`Error::Asi`] if the call fails.
+    pub fn exposure_status(&self) -> Result<ExposureStatus> {
+        #[cfg(feature = "simulation")]
+        let status = self.sim_exposure_status()?;
+        #[cfg(not(feature = "simulation"))]
+        let status = {
+            let mut s: sys::ASI_EXPOSURE_STATUS = 0;
+            // SAFETY: open camera id; the SDK writes the exposure status.
+            asi_check(unsafe { sys::ASIGetExpStatus(self.info.id, &mut s) } as i32)?;
+            ExposureStatus::from_raw(s)
+        };
+        Ok(status)
+    }
+
+    /// Download the most recent frame into `buf` after
+    /// [`ExposureStatus::Success`].
+    ///
+    /// `buf` must be at least [`RoiFormat::buffer_len`] bytes for the current
+    /// ROI; a short buffer is rejected with [`AsiError::BufferTooSmall`]
+    /// **before** the SDK is called (`ASIGetDataAfterExp` would otherwise read
+    /// out of bounds).
+    ///
+    /// # Errors
+    /// Returns [`Error::Asi`] if `buf` is too small or the download fails.
+    pub fn download_exposure(&self, buf: &mut [u8]) -> Result<()> {
+        let need = self.roi_format()?.buffer_len();
+        if buf.len() < need {
+            return Err(Error::Asi(AsiError::BufferTooSmall));
+        }
+        #[cfg(feature = "simulation")]
+        self.sim_download_exposure(buf, need)?;
+        #[cfg(not(feature = "simulation"))]
+        {
+            let len =
+                c_long::try_from(buf.len()).map_err(|_| Error::Asi(AsiError::BufferTooSmall))?;
+            // SAFETY: `buf` is at least `need` bytes (checked above) and `len`
+            // equals its length, so the SDK writes within bounds.
+            asi_check(
+                unsafe { sys::ASIGetDataAfterExp(self.info.id, buf.as_mut_ptr(), len) } as i32,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Begin an ST4 guide pulse in `direction` (requires an ST4 port).
+    ///
+    /// # Errors
+    /// Returns [`Error::Asi`] if the call fails.
+    pub fn pulse_guide_on(&self, direction: GuideDirection) -> Result<()> {
+        #[cfg(feature = "simulation")]
+        let _ = direction;
+        #[cfg(not(feature = "simulation"))]
+        // SAFETY: open camera id; starts an ST4 pulse in the given direction.
+        asi_check(unsafe { sys::ASIPulseGuideOn(self.info.id, direction.to_raw()) } as i32)?;
+        Ok(())
+    }
+
+    /// End an ST4 guide pulse in `direction`.
+    ///
+    /// # Errors
+    /// Returns [`Error::Asi`] if the call fails.
+    pub fn pulse_guide_off(&self, direction: GuideDirection) -> Result<()> {
+        #[cfg(feature = "simulation")]
+        let _ = direction;
+        #[cfg(not(feature = "simulation"))]
+        // SAFETY: open camera id; ends the ST4 pulse in the given direction.
+        asi_check(unsafe { sys::ASIPulseGuideOff(self.info.id, direction.to_raw()) } as i32)?;
+        Ok(())
     }
 }
 
@@ -424,9 +853,176 @@ fn sim_control_caps() -> Vec<ControlCaps> {
     ]
 }
 
+/// Mutable state for the simulated camera, behind a `Mutex` so the `&self`
+/// device methods can update it.
+#[cfg(feature = "simulation")]
+#[derive(Debug)]
+struct SimState {
+    roi: RoiFormat,
+    start_x: u32,
+    start_y: u32,
+    exposure_status: ExposureStatus,
+    gain: i64,
+    offset: i64,
+    target_temp: i64,
+    cooler_on: bool,
+}
+
+#[cfg(feature = "simulation")]
+impl SimState {
+    fn new(info: &CameraInfo) -> Self {
+        Self {
+            roi: RoiFormat {
+                width: info.max_width,
+                height: info.max_height,
+                bin: 1,
+                image_type: ImageType::Raw16,
+            },
+            start_x: 0,
+            start_y: 0,
+            exposure_status: ExposureStatus::Idle,
+            gain: 100,
+            offset: 50,
+            target_temp: 0,
+            cooler_on: false,
+        }
+    }
+}
+
+#[cfg(feature = "simulation")]
+impl Camera {
+    fn sim_set_roi_format(
+        &self,
+        width: u32,
+        height: u32,
+        bin: u32,
+        image_type: ImageType,
+    ) -> Result<()> {
+        if !self.info.supported_bins.contains(&bin) {
+            return Err(Error::Asi(AsiError::InvalidSize));
+        }
+        if !width.is_multiple_of(8) || !height.is_multiple_of(2) {
+            return Err(Error::Asi(AsiError::InvalidSize));
+        }
+        let max_w = self.info.max_width / bin;
+        let max_h = self.info.max_height / bin;
+        if width == 0 || height == 0 || width > max_w || height > max_h {
+            return Err(Error::Asi(AsiError::InvalidSize));
+        }
+        let mut st = self.state.lock().unwrap();
+        st.roi = RoiFormat {
+            width,
+            height,
+            bin,
+            image_type,
+        };
+        // Re-centre the ROI start, matching the SDK's default behaviour.
+        st.start_x = (max_w - width) / 2;
+        st.start_y = (max_h - height) / 2;
+        Ok(())
+    }
+
+    fn sim_roi_format(&self) -> Result<RoiFormat> {
+        Ok(self.state.lock().unwrap().roi)
+    }
+
+    fn sim_set_start_pos(&self, x: u32, y: u32) -> Result<()> {
+        let mut st = self.state.lock().unwrap();
+        let max_w = self.info.max_width / st.roi.bin;
+        let max_h = self.info.max_height / st.roi.bin;
+        if x.saturating_add(st.roi.width) > max_w || y.saturating_add(st.roi.height) > max_h {
+            return Err(Error::Asi(AsiError::OutOfBoundary));
+        }
+        st.start_x = x;
+        st.start_y = y;
+        Ok(())
+    }
+
+    fn sim_start_pos(&self) -> Result<(u32, u32)> {
+        let st = self.state.lock().unwrap();
+        Ok((st.start_x, st.start_y))
+    }
+
+    fn sim_control_value(&self, control: ControlType) -> Result<ControlValue> {
+        let st = self.state.lock().unwrap();
+        let value = match control {
+            ControlType::Gain => st.gain,
+            ControlType::Offset => st.offset,
+            ControlType::TargetTemp => st.target_temp,
+            ControlType::CoolerOn => i64::from(st.cooler_on),
+            ControlType::CoolerPowerPerc => {
+                if st.cooler_on {
+                    60
+                } else {
+                    0
+                }
+            }
+            ControlType::Temperature => {
+                // 0.1 °C units: track the target when cooling, else ambient.
+                let celsius = if st.cooler_on { st.target_temp } else { 20 };
+                celsius * 10
+            }
+            _ => return Err(Error::Asi(AsiError::InvalidControlType)),
+        };
+        Ok(ControlValue {
+            value,
+            is_auto: false,
+        })
+    }
+
+    fn sim_set_control_value(&self, control: ControlType, value: i64, _auto: bool) -> Result<()> {
+        let mut st = self.state.lock().unwrap();
+        match control {
+            ControlType::Gain => st.gain = value,
+            ControlType::Offset => st.offset = value,
+            ControlType::TargetTemp => st.target_temp = value,
+            ControlType::CoolerOn => st.cooler_on = value != 0,
+            // Read-only (e.g. Temperature) and unknown controls are rejected.
+            _ => return Err(Error::Asi(AsiError::InvalidControlType)),
+        }
+        Ok(())
+    }
+
+    fn sim_start_exposure(&self, _is_dark: bool) -> Result<()> {
+        self.state.lock().unwrap().exposure_status = ExposureStatus::Working;
+        Ok(())
+    }
+
+    fn sim_stop_exposure(&self) -> Result<()> {
+        self.state.lock().unwrap().exposure_status = ExposureStatus::Idle;
+        Ok(())
+    }
+
+    fn sim_exposure_status(&self) -> Result<ExposureStatus> {
+        let mut st = self.state.lock().unwrap();
+        let current = st.exposure_status;
+        // A simulated exposure completes one poll after it starts.
+        if current == ExposureStatus::Working {
+            st.exposure_status = ExposureStatus::Success;
+        }
+        Ok(current)
+    }
+
+    fn sim_download_exposure(&self, buf: &mut [u8], need: usize) -> Result<()> {
+        for byte in buf.iter_mut().take(need) {
+            *byte = crate::simulation::noise_sample() as u8;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn camera_is_send() {
+        // The ZWO SDK isn't concurrency-safe per camera, so `Camera` is `Send`
+        // (movable between threads) but deliberately not `Sync`. Lock in `Send`
+        // here — the multi-threaded tokio runtime the driver uses requires it.
+        fn assert_send<T: Send>() {}
+        assert_send::<Camera>();
+    }
 
     #[test]
     fn cameras_enumerates() {
@@ -486,5 +1082,156 @@ mod tests {
             sdk.open_camera(99).unwrap_err(),
             Error::Asi(AsiError::InvalidIndex)
         );
+    }
+
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn roi_format_round_trips_and_recenters() {
+        let sdk = Sdk::new().unwrap();
+        let cam = sdk.open_camera(0).unwrap();
+        // Default ROI is full-frame Raw16 bin1.
+        let default = cam.roi_format().unwrap();
+        assert_eq!(default.width, 6248);
+        assert_eq!(default.height, 4176);
+        assert_eq!(default.bin, 1);
+        assert_eq!(default.image_type, ImageType::Raw16);
+        assert_eq!(default.buffer_len(), 6248 * 4176 * 2);
+
+        // A binned, sub-framed ROI.
+        cam.set_roi_format(800, 600, 2, ImageType::Raw8).unwrap();
+        let roi = cam.roi_format().unwrap();
+        assert_eq!(roi.width, 800);
+        assert_eq!(roi.height, 600);
+        assert_eq!(roi.bin, 2);
+        assert_eq!(roi.image_type, ImageType::Raw8);
+        assert_eq!(roi.buffer_len(), 800 * 600);
+        // Setting the ROI re-centres the start position (binned coordinates).
+        let (sx, sy) = cam.start_pos().unwrap();
+        assert_eq!(sx, (6248 / 2 - 800) / 2);
+        assert_eq!(sy, (4176 / 2 - 600) / 2);
+    }
+
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn set_roi_format_rejects_misaligned_and_unsupported() {
+        let sdk = Sdk::new().unwrap();
+        let cam = sdk.open_camera(0).unwrap();
+        // width not a multiple of 8
+        assert_eq!(
+            cam.set_roi_format(801, 600, 1, ImageType::Raw16)
+                .unwrap_err(),
+            Error::Asi(AsiError::InvalidSize)
+        );
+        // height not a multiple of 2
+        assert_eq!(
+            cam.set_roi_format(800, 601, 1, ImageType::Raw16)
+                .unwrap_err(),
+            Error::Asi(AsiError::InvalidSize)
+        );
+        // unsupported binning
+        assert_eq!(
+            cam.set_roi_format(800, 600, 5, ImageType::Raw16)
+                .unwrap_err(),
+            Error::Asi(AsiError::InvalidSize)
+        );
+    }
+
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn set_start_pos_rejects_out_of_bounds() {
+        let sdk = Sdk::new().unwrap();
+        let cam = sdk.open_camera(0).unwrap();
+        cam.set_roi_format(800, 600, 1, ImageType::Raw16).unwrap();
+        cam.set_start_pos(100, 100).unwrap();
+        assert_eq!(cam.start_pos().unwrap(), (100, 100));
+        // start + size beyond the full frame
+        assert_eq!(
+            cam.set_start_pos(6000, 100).unwrap_err(),
+            Error::Asi(AsiError::OutOfBoundary)
+        );
+    }
+
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn control_values_round_trip() {
+        let sdk = Sdk::new().unwrap();
+        let cam = sdk.open_camera(0).unwrap();
+        cam.set_control_value(ControlType::Gain, 200, false)
+            .unwrap();
+        assert_eq!(cam.control_value(ControlType::Gain).unwrap().value, 200);
+        cam.set_control_value(ControlType::Offset, 30, false)
+            .unwrap();
+        assert_eq!(cam.control_value(ControlType::Offset).unwrap().value, 30);
+        // Cooler + target temperature drive the simulated sensor temperature.
+        cam.set_control_value(ControlType::TargetTemp, -10, false)
+            .unwrap();
+        cam.set_control_value(ControlType::CoolerOn, 1, false)
+            .unwrap();
+        assert_eq!(cam.control_value(ControlType::CoolerOn).unwrap().value, 1);
+        assert!((cam.temperature_celsius().unwrap() - (-10.0)).abs() < f64::EPSILON);
+    }
+
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn set_unwritable_control_is_rejected() {
+        let sdk = Sdk::new().unwrap();
+        let cam = sdk.open_camera(0).unwrap();
+        assert_eq!(
+            cam.set_control_value(ControlType::Temperature, 0, false)
+                .unwrap_err(),
+            Error::Asi(AsiError::InvalidControlType)
+        );
+    }
+
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn exposure_cycle_completes_and_downloads() {
+        let sdk = Sdk::new().unwrap();
+        let cam = sdk.open_camera(0).unwrap();
+        cam.set_roi_format(800, 600, 1, ImageType::Raw16).unwrap();
+        assert_eq!(cam.exposure_status().unwrap(), ExposureStatus::Idle);
+
+        cam.start_exposure(false).unwrap();
+        // The simulated exposure reports Working once, then Success.
+        assert_eq!(cam.exposure_status().unwrap(), ExposureStatus::Working);
+        assert_eq!(cam.exposure_status().unwrap(), ExposureStatus::Success);
+
+        let mut buf = vec![0u8; cam.roi_format().unwrap().buffer_len()];
+        cam.download_exposure(&mut buf).unwrap();
+        assert_eq!(buf.len(), 800 * 600 * 2);
+    }
+
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn download_rejects_short_buffer() {
+        let sdk = Sdk::new().unwrap();
+        let cam = sdk.open_camera(0).unwrap();
+        cam.set_roi_format(800, 600, 1, ImageType::Raw16).unwrap();
+        let mut buf = vec![0u8; 10];
+        assert_eq!(
+            cam.download_exposure(&mut buf).unwrap_err(),
+            Error::Asi(AsiError::BufferTooSmall)
+        );
+    }
+
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn stop_exposure_returns_to_idle() {
+        let sdk = Sdk::new().unwrap();
+        let cam = sdk.open_camera(0).unwrap();
+        cam.start_exposure(false).unwrap();
+        cam.stop_exposure().unwrap();
+        assert_eq!(cam.exposure_status().unwrap(), ExposureStatus::Idle);
+    }
+
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn pulse_guide_is_accepted() {
+        let sdk = Sdk::new().unwrap();
+        let cam = sdk.open_camera(0).unwrap();
+        cam.pulse_guide_on(GuideDirection::North).unwrap();
+        cam.pulse_guide_off(GuideDirection::North).unwrap();
+        cam.pulse_guide_on(GuideDirection::West).unwrap();
+        cam.pulse_guide_off(GuideDirection::West).unwrap();
     }
 }

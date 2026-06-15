@@ -7,10 +7,12 @@
 //!
 //! ## Status
 //!
-//! **Under construction.** Enumeration and SDK-version queries are wired to the
-//! FFI; camera and EFW device handles are being built out per the rusty-photon
-//! `docs/plans/zwo-driver.md` plan. Scope order: **Camera → EFW filter wheel →
-//! EAF focuser**.
+//! **Under construction.** Enumeration, SDK-version queries, and the ASI
+//! [`Camera`] handle — open/init, [`CameraInfo`], serial, control caps, ROI and
+//! binning, control get/set, single exposures, frame download, and ST4 guiding —
+//! are wired to the FFI. The EFW filter-wheel handle is next, per the
+//! rusty-photon `docs/plans/zwo-driver.md` plan. Scope order: **Camera → EFW
+//! filter wheel → EAF focuser**.
 //!
 //! ## `simulation` feature
 //!
@@ -33,7 +35,10 @@ pub use libzwo_sys as sys;
 
 mod camera;
 mod error;
-pub use camera::{BayerPattern, Camera, CameraInfo, ControlCaps, ControlType};
+pub use camera::{
+    BayerPattern, Camera, CameraInfo, ControlCaps, ControlType, ControlValue, ExposureStatus,
+    GuideDirection, ImageType, RoiFormat,
+};
 pub use error::{asi_check, efw_check, AsiError, EfwError, Error, Result};
 
 /// Number of simulated ASI cameras presented when the `simulation` feature is on.
