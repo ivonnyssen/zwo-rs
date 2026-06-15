@@ -33,7 +33,7 @@ SDK **binary** is *not* vendored — it is installed on the system (below).
 
 | Need | For | Notes |
 |---|---|---|
-| **libclang** | `bindgen` (so `check`/`clippy`/`doc`/`build`) | Set `LIBCLANG_PATH=/usr/lib/<triple>` if not auto-found. |
+| **libclang** | `bindgen` (so `check`/`clippy`/`doc`/`build`) | Set `LIBCLANG_PATH` if not auto-found — e.g. `/usr/lib/<triple>` (Debian) or `/usr/lib64` (Fedora). |
 | **ZWO ASI SDK** (`libASICamera2`, `libEFWFilter`) + **libusb-1.0** | *linking* (`build`/`test`) | Required even with `--features simulation`. `cargo check`/`clippy` do **not** link. |
 | udev `99-asi.rules` | running against real hardware (Linux) | VID `03c3`, `MODE=0666`, `usbfs_memory_mb=200`. |
 
@@ -49,9 +49,14 @@ Override the SDK lib directory with `ZWO_SDK_LIB_DIR=/path/to/lib`.
 
 ```sh
 # bindgen only — needs libclang, not the SDK:
-LIBCLANG_PATH=/usr/lib/$(uname -m)-linux-gnu cargo clippy --all --all-targets --all-features -- -D warnings
+cargo clippy --all --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check
 ```
+
+If `bindgen` can't auto-find libclang, set `LIBCLANG_PATH` to wherever it
+lives on your distro — e.g. `/usr/lib/$(uname -m)-linux-gnu` on Debian/Ubuntu,
+or `/usr/lib64` on Fedora/RHEL. Don't set it to a path that doesn't exist:
+that *overrides* auto-detection and forces the "couldn't find libclang" error.
 
 ## `simulation` feature
 
