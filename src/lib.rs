@@ -7,15 +7,18 @@
 //!
 //! ## Status
 //!
-//! **Skeleton.** The FFI is generated and links; the safe surface is being built
-//! out per the rusty-photon `docs/plans/zwo-driver.md` plan. Scope order:
-//! **Camera → EFW filter wheel → EAF focuser**.
+//! **Under construction.** Enumeration and SDK-version queries are wired to the
+//! FFI; camera and EFW device handles are being built out per the rusty-photon
+//! `docs/plans/zwo-driver.md` plan. Scope order: **Camera → EFW filter wheel →
+//! EAF focuser**.
 //!
 //! ## `simulation` feature
 //!
 //! Mirrors qhyccd-rs: enables a hardware-free, in-Rust simulated environment for
 //! development and tests. Note (as with qhyccd-rs) the SDK is still *linked* when
-//! this feature is enabled — it removes the camera, not the link.
+//! this feature is enabled — it removes the hardware, not the link. With the
+//! feature on, the SDK is never called: enumeration reports the fixed simulated
+//! device counts ([`SIM_CAMERA_COUNT`], [`SIM_FILTER_WHEEL_COUNT`]).
 //!
 //! ## Build requirements
 //!
@@ -28,27 +31,22 @@
 /// Raw, unsafe FFI bindings (`bindgen`). Prefer the safe API in this crate.
 pub use libzwo_sys as sys;
 
-use thiserror::Error;
+mod error;
+pub use error::{asi_check, efw_check, AsiError, EfwError, Error, Result};
 
-/// Errors returned by the safe API.
-#[derive(Debug, Error)]
-#[non_exhaustive]
-pub enum Error {
-    /// The requested operation is not yet implemented in this skeleton.
-    #[error("operation not yet implemented")]
-    NotImplemented,
-    /// The underlying ASI/EFW SDK returned a non-success error code.
-    #[error("ZWO SDK error (code {0})")]
-    Sdk(i32),
-}
+/// Number of simulated ASI cameras presented when the `simulation` feature is on.
+#[cfg(feature = "simulation")]
+pub const SIM_CAMERA_COUNT: usize = 1;
 
-/// Convenience result alias.
-pub type Result<T> = std::result::Result<T, Error>;
+/// Number of simulated EFW filter wheels presented when `simulation` is on.
+#[cfg(feature = "simulation")]
+pub const SIM_FILTER_WHEEL_COUNT: usize = 1;
 
-/// Entry point to the ZWO SDK (skeleton).
+/// Entry point to the ZWO SDK.
 ///
 /// Enumerates connected ASI cameras and EFW filter wheels. With the `simulation`
-/// feature a simulated environment is provided instead of real hardware.
+/// feature, a fixed simulated environment is reported and the native SDK is
+/// never called (though it is still linked — see the crate docs).
 #[derive(Debug, Default)]
 pub struct Sdk {
     _private: (),
@@ -56,32 +54,107 @@ pub struct Sdk {
 
 impl Sdk {
     /// Initialise the SDK.
+    ///
+    /// # Errors
+    /// Currently infallible, but returns [`Result`] so future initialisation
+    /// (e.g. SDK version checks) can surface failures without an API break.
     pub fn new() -> Result<Self> {
-        tracing::debug!("initialising ZWO SDK (skeleton)");
+        tracing::debug!("initialising ZWO SDK");
         Ok(Self { _private: () })
     }
 
-    /// Number of connected ASI cameras.
+    /// Number of connected ASI cameras (`ASIGetNumOfConnectedCameras`).
     ///
-    /// TODO: wire to [`sys::ASIGetNumOfConnectedCameras`] (Camera phase).
+    /// # Errors
+    /// Infallible today; returns [`Result`] for forward compatibility.
     pub fn camera_count(&self) -> Result<usize> {
-        Err(Error::NotImplemented)
+        #[cfg(feature = "simulation")]
+        let count = SIM_CAMERA_COUNT;
+        #[cfg(not(feature = "simulation"))]
+        let count = {
+            // SAFETY: `ASIGetNumOfConnectedCameras` takes no arguments and
+            // returns the connected-camera count (it probes USB and is always
+            // safe to call). A negative return is clamped to zero.
+            let n = unsafe { sys::ASIGetNumOfConnectedCameras() };
+            usize::try_from(n).unwrap_or(0)
+        };
+        Ok(count)
     }
 
-    /// Number of connected EFW filter wheels.
+    /// Number of connected EFW filter wheels (`EFWGetNum`).
     ///
-    /// TODO: wire to [`sys::EFWGetNum`] (EFW phase).
+    /// # Errors
+    /// Infallible today; returns [`Result`] for forward compatibility.
     pub fn filter_wheel_count(&self) -> Result<usize> {
-        Err(Error::NotImplemented)
+        #[cfg(feature = "simulation")]
+        let count = SIM_FILTER_WHEEL_COUNT;
+        #[cfg(not(feature = "simulation"))]
+        let count = {
+            // SAFETY: `EFWGetNum` takes no arguments and returns the connected
+            // filter-wheel count; always safe to call. Negative is clamped.
+            let n = unsafe { sys::EFWGetNum() };
+            usize::try_from(n).unwrap_or(0)
+        };
+        Ok(count)
     }
+
+    /// ASI camera SDK version string (`ASIGetSDKVersion`), e.g. `"1, 36, 0"`.
+    ///
+    /// # Errors
+    /// Infallible today; returns [`Result`] for forward compatibility.
+    pub fn asi_version(&self) -> Result<String> {
+        #[cfg(feature = "simulation")]
+        let version = "simulation".to_owned();
+        #[cfg(not(feature = "simulation"))]
+        let version = {
+            // SAFETY: `ASIGetSDKVersion` returns a pointer to a static,
+            // NUL-terminated C string owned by the SDK; we only read it.
+            let ptr = unsafe { sys::ASIGetSDKVersion() };
+            version_string(ptr)
+        };
+        Ok(version)
+    }
+
+    /// EFW filter-wheel SDK version string (`EFWGetSDKVersion`).
+    ///
+    /// # Errors
+    /// Infallible today; returns [`Result`] for forward compatibility.
+    pub fn efw_version(&self) -> Result<String> {
+        #[cfg(feature = "simulation")]
+        let version = "simulation".to_owned();
+        #[cfg(not(feature = "simulation"))]
+        let version = {
+            // SAFETY: as `asi_version` — a static, SDK-owned NUL-terminated
+            // string we only read.
+            let ptr = unsafe { sys::EFWGetSDKVersion() };
+            version_string(ptr)
+        };
+        Ok(version)
+    }
+}
+
+/// Read an SDK-owned, NUL-terminated C string into an owned [`String`]
+/// (lossy on invalid UTF-8). An empty string is returned for a null pointer.
+#[cfg(not(feature = "simulation"))]
+fn version_string(ptr: *const std::os::raw::c_char) -> String {
+    if ptr.is_null() {
+        return String::new();
+    }
+    // SAFETY: the SDK returns a pointer to a static, NUL-terminated string;
+    // the read is bounded by the terminating NUL and the data outlives the call.
+    unsafe { std::ffi::CStr::from_ptr(ptr) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[cfg(feature = "simulation")]
 pub mod simulation {
     //! Hardware-free, in-Rust simulation backend (no SDK calls).
     //!
-    //! Skeleton: real simulated frames / EFW motion land with the Camera and
-    //! filter-wheel phases.
+    //! Enumeration of the simulated environment is reported by [`crate::Sdk`]
+    //! via [`crate::SIM_CAMERA_COUNT`] / [`crate::SIM_FILTER_WHEEL_COUNT`].
+    //! Simulated frames and EFW motion land with the Camera and filter-wheel
+    //! device handles.
     use rand::Rng;
 
     /// One 16-bit noise sample — a placeholder for simulated sensor frames.
@@ -97,19 +170,66 @@ mod tests {
 
     #[test]
     fn sdk_new_succeeds() {
+        Sdk::new().unwrap();
+    }
+
+    #[test]
+    fn enumeration_returns_a_count() {
         let sdk = Sdk::new().unwrap();
-        // Skeleton: enumeration is not wired yet.
-        assert!(matches!(sdk.camera_count(), Err(Error::NotImplemented)));
-        assert!(matches!(
-            sdk.filter_wheel_count(),
-            Err(Error::NotImplemented)
-        ));
+        let cameras = sdk.camera_count().unwrap();
+        let wheels = sdk.filter_wheel_count().unwrap();
+        #[cfg(feature = "simulation")]
+        {
+            assert_eq!(cameras, SIM_CAMERA_COUNT);
+            assert_eq!(wheels, SIM_FILTER_WHEEL_COUNT);
+        }
+        // Without the simulation feature this calls the real SDK; with no
+        // hardware attached the counts are zero, but the call must not panic.
+        #[cfg(not(feature = "simulation"))]
+        {
+            let _ = (cameras, wheels);
+        }
+    }
+
+    #[test]
+    fn sdk_versions_are_non_empty() {
+        let sdk = Sdk::new().unwrap();
+        assert!(!sdk.asi_version().unwrap().is_empty());
+        assert!(!sdk.efw_version().unwrap().is_empty());
+    }
+
+    #[test]
+    fn asi_check_maps_known_and_unknown_codes() {
+        asi_check(0).unwrap();
+        assert_eq!(
+            asi_check(1).unwrap_err(),
+            Error::Asi(AsiError::InvalidIndex)
+        );
+        assert_eq!(
+            asi_check(16).unwrap_err(),
+            Error::Asi(AsiError::GeneralError)
+        );
+        assert_eq!(
+            asi_check(999).unwrap_err(),
+            Error::Asi(AsiError::Unknown(999))
+        );
+    }
+
+    #[test]
+    fn efw_check_maps_known_and_unknown_codes() {
+        efw_check(0).unwrap();
+        assert_eq!(efw_check(5).unwrap_err(), Error::Efw(EfwError::Moving));
+        assert_eq!(efw_check(9).unwrap_err(), Error::Efw(EfwError::Closed));
+        assert_eq!(
+            efw_check(42).unwrap_err(),
+            Error::Efw(EfwError::Unknown(42))
+        );
     }
 
     #[cfg(feature = "simulation")]
     #[test]
     fn simulation_noise_sample_runs() {
-        // Just exercise the simulation path; any u16 is valid.
+        // Any u16 is valid; just exercise the simulation path.
         let _ = simulation::noise_sample();
     }
 }

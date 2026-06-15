@@ -5,9 +5,11 @@ Safe Rust bindings for the **ZWO ASI camera** and **EFW filter wheel** SDK (with
 [`qhyccd-rs`](https://github.com/ivonnyssen/qhyccd-rs); consumed by rusty-photon's
 `zwo-camera` ASCOM Alpaca driver.
 
-> **Status: skeleton.** The FFI is generated and links; the safe API is being
-> built out. Scope order: **Camera → EFW filter wheel → EAF focuser**. See the
-> rusty-photon `docs/plans/zwo-driver.md` plan for the full design.
+> **Status: under construction.** Enumeration (`ASIGetNumOfConnectedCameras`,
+> `EFWGetNum`), SDK-version queries, and typed ASI/EFW error mapping are wired to
+> the FFI; camera and EFW device handles are next. Scope order: **Camera → EFW
+> filter wheel → EAF focuser**. See the rusty-photon `docs/plans/zwo-driver.md`
+> plan for the full design.
 
 ## Crates
 
