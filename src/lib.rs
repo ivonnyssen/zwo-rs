@@ -31,7 +31,9 @@
 /// Raw, unsafe FFI bindings (`bindgen`). Prefer the safe API in this crate.
 pub use libzwo_sys as sys;
 
+mod camera;
 mod error;
+pub use camera::{BayerPattern, Camera, CameraInfo, ControlCaps, ControlType};
 pub use error::{asi_check, efw_check, AsiError, EfwError, Error, Result};
 
 /// Number of simulated ASI cameras presented when the `simulation` feature is on.
