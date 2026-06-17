@@ -848,6 +848,7 @@ struct SimState {
     exposure_status: ExposureStatus,
     gain: i64,
     offset: i64,
+    exposure_us: i64,
     target_temp: i64,
     cooler_on: bool,
 }
@@ -867,6 +868,8 @@ impl SimState {
             exposure_status: ExposureStatus::Idle,
             gain: 100,
             offset: 50,
+            // Matches the "Exposure" control cap default (microseconds).
+            exposure_us: 10_000,
             target_temp: 0,
             cooler_on: false,
         }
@@ -932,6 +935,7 @@ impl Camera {
         let value = match control {
             ControlType::Gain => st.gain,
             ControlType::Offset => st.offset,
+            ControlType::Exposure => st.exposure_us,
             ControlType::TargetTemp => st.target_temp,
             ControlType::CoolerOn => i64::from(st.cooler_on),
             ControlType::CoolerPowerPerc => {
@@ -959,6 +963,7 @@ impl Camera {
         match control {
             ControlType::Gain => st.gain = value,
             ControlType::Offset => st.offset = value,
+            ControlType::Exposure => st.exposure_us = value,
             ControlType::TargetTemp => st.target_temp = value,
             ControlType::CoolerOn => st.cooler_on = value != 0,
             // Read-only (e.g. Temperature) and unknown controls are rejected.
@@ -988,9 +993,7 @@ impl Camera {
     }
 
     fn sim_download_exposure(&self, buf: &mut [u8], need: usize) -> Result<()> {
-        for byte in buf.iter_mut().take(need) {
-            *byte = crate::simulation::noise_sample() as u8;
-        }
+        crate::simulation::fill_noise(&mut buf[..need]);
         Ok(())
     }
 }
@@ -1153,6 +1156,43 @@ mod tests {
             .unwrap();
         assert_eq!(cam.control_value(ControlType::CoolerOn).unwrap().value, 1);
         assert!((cam.temperature_celsius().unwrap() - (-10.0)).abs() < f64::EPSILON);
+    }
+
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn exposure_control_round_trips() {
+        let sdk = Sdk::new().unwrap();
+        let cam = sdk.open_camera(0).unwrap();
+        // The "Exposure" control is advertised as writable; a real ASI camera
+        // accepts it, so the simulation must too (the driver sets the
+        // exposure-time control before every capture).
+        assert_eq!(
+            cam.control_value(ControlType::Exposure).unwrap().value,
+            10_000
+        );
+        cam.set_control_value(ControlType::Exposure, 1_500_000, false)
+            .unwrap();
+        assert_eq!(
+            cam.control_value(ControlType::Exposure).unwrap().value,
+            1_500_000
+        );
+    }
+
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn full_frame_download_fills_buffer() {
+        // Exercises the fast (parallel) frame fill at full-sensor size: the old
+        // byte-at-a-time fill took >10 s here and tripped ConformU's timeout.
+        let sdk = Sdk::new().unwrap();
+        let cam = sdk.open_camera(0).unwrap();
+        let need = cam.roi_format().unwrap().buffer_len();
+        assert_eq!(need, 6248 * 4176 * 2);
+        cam.start_exposure(false).unwrap();
+        assert_eq!(cam.exposure_status().unwrap(), ExposureStatus::Working);
+        assert_eq!(cam.exposure_status().unwrap(), ExposureStatus::Success);
+        let mut buf = vec![0u8; need];
+        cam.download_exposure(&mut buf).unwrap();
+        assert_eq!(buf.len(), need);
     }
 
     #[cfg(feature = "simulation")]

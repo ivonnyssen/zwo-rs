@@ -69,6 +69,13 @@ A hardware-free, in-Rust environment for development and tests. As in qhyccd-rs,
 enabling it removes the *camera*, **not** the SDK *link* — the native SDK is still
 linked. Build/test of the simulation path therefore still requires the SDK.
 
+The simulated `ASI2600MM-Pro-Simulated` camera models the full control set
+(including the writable **Exposure** control) and an exposure that completes one
+poll after it starts. Frames are filled with sensor noise in parallel (rayon +
+the bulk `RngCore::fill_bytes` path), so even a full-frame 6248×4176 download
+returns in a few milliseconds — fast enough to stay inside conformance tools'
+`StartExposure` timeouts.
+
 ## License
 
 Dual-licensed under either of [MIT](LICENSE-MIT) or

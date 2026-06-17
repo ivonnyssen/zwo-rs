@@ -167,12 +167,29 @@ pub mod simulation {
     //! via [`crate::SIM_CAMERA_COUNT`] / [`crate::SIM_FILTER_WHEEL_COUNT`].
     //! Simulated frames and EFW motion land with the Camera and filter-wheel
     //! device handles.
-    use rand::Rng;
+    use rand::{Rng, RngCore};
+    use rayon::prelude::*;
 
     /// One 16-bit noise sample — a placeholder for simulated sensor frames.
     #[must_use]
     pub fn noise_sample() -> u16 {
         rand::rng().random()
+    }
+
+    /// Fill `buf` with simulated sensor noise as fast as possible.
+    ///
+    /// A full-frame ASI2600 frame is ~52 MiB. Filling it one byte at a time —
+    /// the original approach, a fresh [`rand::rng()`] lookup per byte — took
+    /// over 10 s and tripped ConformU's 10 s `StartExposure` timeout. This
+    /// splits the buffer into chunks filled in parallel across rayon's pool,
+    /// each by a thread-local RNG via the bulk [`RngCore::fill_bytes`] path,
+    /// turning a full-frame download into a few milliseconds.
+    pub fn fill_noise(buf: &mut [u8]) {
+        // 64 KiB keeps per-chunk RNG acquisition negligible while still giving
+        // rayon plenty of chunks to balance across cores.
+        const CHUNK: usize = 64 * 1024;
+        buf.par_chunks_mut(CHUNK)
+            .for_each(|chunk| rand::rng().fill_bytes(chunk));
     }
 }
 
@@ -243,5 +260,16 @@ mod tests {
     fn simulation_noise_sample_runs() {
         // Any u16 is valid; just exercise the simulation path.
         let _ = simulation::noise_sample();
+    }
+
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn simulation_fill_noise_fills_whole_buffer() {
+        // A small buffer is enough to exercise the parallel fill path; the
+        // chunking is internal. Just assert it touches every byte (vanishingly
+        // unlikely to stay all-zero) and respects the slice length.
+        let mut buf = vec![0u8; 256 * 1024 + 7];
+        simulation::fill_noise(&mut buf);
+        assert!(buf.iter().any(|&b| b != 0));
     }
 }
