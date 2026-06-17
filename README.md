@@ -5,9 +5,14 @@ Safe Rust bindings for the **ZWO ASI camera** and **EFW filter wheel** SDK (with
 [`qhyccd-rs`](https://github.com/ivonnyssen/qhyccd-rs); consumed by rusty-photon's
 `zwo-camera` ASCOM Alpaca driver.
 
-> **Status: skeleton.** The FFI is generated and links; the safe API is being
-> built out. Scope order: **Camera → EFW filter wheel → EAF focuser**. See the
-> rusty-photon `docs/plans/zwo-driver.md` plan for the full design.
+> **Status: under construction.** Enumeration, SDK-version queries, typed
+> ASI/EFW error mapping, the ASI **camera handle** (open/init, `CameraInfo`,
+> serial, control caps, ROI/binning, control get/set, single exposures with
+> frame download, ST4 pulse guiding), and the EFW **filter-wheel handle** (open,
+> slot count, position with the `-1`-while-moving sentinel, serial, firmware,
+> calibration, rotation direction) are wired to the FFI. The EAF focuser is next.
+> Scope order: **Camera → EFW filter wheel → EAF focuser**. See the rusty-photon
+> `docs/plans/zwo-driver.md` plan for the full design.
 
 ## Crates
 
@@ -63,6 +68,13 @@ that *overrides* auto-detection and forces the "couldn't find libclang" error.
 A hardware-free, in-Rust environment for development and tests. As in qhyccd-rs,
 enabling it removes the *camera*, **not** the SDK *link* — the native SDK is still
 linked. Build/test of the simulation path therefore still requires the SDK.
+
+The simulated `ASI2600MM-Pro-Simulated` camera models the full control set
+(including the writable **Exposure** control) and an exposure that completes one
+poll after it starts. Frames are filled with sensor noise in parallel (rayon +
+the bulk `RngCore::fill_bytes` path), so even a full-frame 6248×4176 download
+returns in a few milliseconds — fast enough to stay inside conformance tools'
+`StartExposure` timeouts.
 
 ## License
 
